@@ -22,6 +22,17 @@ let size_conn_pool = ref 16
 
 let make_hashtbl () = Hashtbl.create 8
 
+let pg_prepared_statements = "debug_prepared_statements"
+
+let show_prepared_statements db =
+  let show_col = function | None -> "" | Some str -> str in
+  let show_row r = String.concat " | " @@ List.map show_col r in
+  lwt prepared_statements =
+    PGOCaml.execute db ~name:pg_prepared_statements ~params:[] () in
+  Lwt.return @@
+    "\"DEBUG: SELECT * FROM pg_prepared_statements yields:\n" ^
+    String.concat "\n" @@ List.map show_row prepared_statements
+
 let connect () =
   lwt dbhandle = PGOCaml.connect
                    ?host:!host
@@ -32,6 +43,10 @@ let connect () =
                    ?unix_domain_socket_dir:!unix_domain_socket_dir
                    () in
   PGOCaml.set_private_data dbhandle @@ make_hashtbl ();
+
+  PGOCaml.prepare dbhandle ~name:pg_prepared_statements
+                           ~query:"SELECT * FROM pg_prepared_statements" () >>
+
   Lwt.return dbhandle
 
 let (>>) f g = f >>= fun _ -> g
@@ -41,6 +56,14 @@ let conn_pool : (string, unit) Hashtbl.t PGOCaml.t Lwt_pool.t ref =
   ref @@ Lwt_pool.create !size_conn_pool ~validate:PGOCaml.alive connect
 
 let use_pool f = Lwt_pool.use !conn_pool @@ fun db -> f db
+
+let _ = (* for debugging purposes *)
+  let rec loop () =
+    Lwt_unix.sleep 300.0 >>
+    use_pool (fun db ->
+      Lwt.map Ocsigen_messages.warning @@ show_prepared_statements db) >>
+    loop ()
+  in Lwt.async loop
 
 let key_value_of_row = function
   | [Some key; Some value] -> (PGOCaml.bytea_of_string key, PGOCaml.bytea_of_string value)
@@ -61,8 +84,14 @@ let prepare db query =
   (* Have we prepared this statement already?  If not, do so. *)
   let is_prepared = Hashtbl.mem hashtbl name in
   lwt () = if is_prepared then Lwt.return () else begin
-    PGOCaml.prepare db ~name ~query () >>
-    Lwt.return @@ Hashtbl.add hashtbl name ()
+    try_lwt
+      PGOCaml.prepare db ~name ~query () >>
+      Lwt.return @@ Hashtbl.add hashtbl name ()
+    with e -> (*only when "already prepared"*)
+      Ocsigen_messages.errlog @@ "error while preparing query: " ^ query;
+      Ocsigen_messages.errlog (Printexc.to_string e);
+      Lwt.map Ocsigen_messages.errlog (show_prepared_statements db) >>
+      Lwt.fail e
   end in
   Lwt.return name
 
