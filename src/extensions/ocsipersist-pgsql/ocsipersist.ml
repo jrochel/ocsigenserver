@@ -106,8 +106,7 @@ let cursor db query params f =
   let error = ref None in
   lwt () = PGOCaml.cursor db ~name ~params @@ fun row -> try_lwt
       let (key,value) = key_value_of_row row in
-      f (PGOCaml.bytea_of_string key)
-        (unmarshal @@ PGOCaml.bytea_of_string value)
+      f key (unmarshal value)
     with e ->
       Ocsigen_messages.errlog (Printexc.to_string e);
       error := Some e;
