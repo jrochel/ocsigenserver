@@ -1375,6 +1375,7 @@ let start_server () =
 
       Lwt.async_exception_hook := (fun e ->
         (* replace the default "exit 2" behaviour *)
+        Lwt.async (fun () -> Lwt.fail e);
         Lwt_log.ign_error ~section ~exn:e "Uncaught Exception"
       );
 
